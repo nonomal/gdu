@@ -1,3 +1,6 @@
+//go:build freebsd || darwin
+// +build freebsd darwin
+
 package device
 
 import (
@@ -6,20 +9,22 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"regexp"
 	"strings"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
-// FreeBSDDevicesInfoGetter returns info for FreeBSD devices
-type FreeBSDDevicesInfoGetter struct {
+// BSDDevicesInfoGetter returns info for Darwin devices
+type BSDDevicesInfoGetter struct {
 	MountCmd string
 }
 
 // Getter is current instance of DevicesInfoGetter
-var Getter DevicesInfoGetter = FreeBSDDevicesInfoGetter{MountCmd: "/sbin/mount"}
+var Getter DevicesInfoGetter = BSDDevicesInfoGetter{MountCmd: "/sbin/mount"}
 
-// GetMounts returns all mounted filesystems from /proc/mounts
-func (t FreeBSDDevicesInfoGetter) GetMounts() (Devices, error) {
+// GetMounts returns all mounted filesystems from output of /sbin/mount
+func (t BSDDevicesInfoGetter) GetMounts() (Devices, error) {
 	out, err := exec.Command(t.MountCmd).Output()
 	if err != nil {
 		return nil, err
@@ -31,7 +36,7 @@ func (t FreeBSDDevicesInfoGetter) GetMounts() (Devices, error) {
 }
 
 // GetDevicesInfo returns result of GetMounts with usage info about mounted devices (by calling Statfs syscall)
-func (t FreeBSDDevicesInfoGetter) GetDevicesInfo() (Devices, error) {
+func (t BSDDevicesInfoGetter) GetDevicesInfo() (Devices, error) {
 	mounts, err := t.GetMounts()
 	if err != nil {
 		return nil, err
@@ -47,21 +52,18 @@ func readMountOutput(rdr io.Reader) (Devices, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		parts := strings.Fields(line)
+		re := regexp.MustCompile(`^(.*) on (/.*) \(([^)]+)\)$`)
+		parts := re.FindAllStringSubmatch(line, -1)
 
-		if len(parts) < 4 {
+		if len(parts) < 1 {
 			return nil, errors.New("Cannot parse mount output")
 		}
 
-		if len(parts[3]) < 3 {
-			return nil, errors.New("Cannot parse mount output")
-		}
-
-		fstype := parts[3][1 : len(parts[3])-1]
+		fstype := strings.TrimSpace(strings.Split(parts[0][3], ",")[0])
 
 		device := &Device{
-			Name:       parts[0],
-			MountPoint: parts[2],
+			Name:       parts[0][1],
+			MountPoint: parts[0][2],
 			Fstype:     fstype,
 		}
 		mounts = append(mounts, device)
@@ -78,18 +80,20 @@ func processMounts(mounts Devices, ignoreErrors bool) (Devices, error) {
 	devices := Devices{}
 
 	for _, mount := range mounts {
-		if strings.HasPrefix(mount.Name, "/dev") || mount.Fstype == "zfs" {
-			info := &syscall.Statfs_t{}
-			err := syscall.Statfs(mount.MountPoint, info)
-			if err != nil && !ignoreErrors {
-				return nil, err
-			}
-
-			mount.Size = int64(info.Bsize) * int64(info.Blocks)
-			mount.Free = int64(info.Bsize) * int64(info.Bavail)
-
-			devices = append(devices, mount)
+		if !strings.HasPrefix(mount.Name, "/dev") && mount.Fstype != "zfs" {
+			continue
 		}
+
+		info := &unix.Statfs_t{}
+		err := unix.Statfs(mount.MountPoint, info)
+		if err != nil && !ignoreErrors {
+			return nil, err
+		}
+
+		mount.Size = int64(info.Bsize) * int64(info.Blocks)
+		mount.Free = int64(info.Bsize) * int64(info.Bavail)
+
+		devices = append(devices, mount)
 	}
 
 	return devices, nil

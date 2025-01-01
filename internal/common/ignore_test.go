@@ -1,6 +1,7 @@
 package common_test
 
 import (
+	"os"
 	"testing"
 
 	log "github.com/sirupsen/logrus"
@@ -17,7 +18,7 @@ func TestCreateIgnorePattern(t *testing.T) {
 	re, err := common.CreateIgnorePattern([]string{"[abc]+"})
 
 	assert.Nil(t, err)
-	assert.True(t, re.Match([]byte("aa")))
+	assert.True(t, re.MatchString("aa"))
 }
 
 func TestCreateIgnorePatternWithErr(t *testing.T) {
@@ -53,6 +54,40 @@ func TestIgnoreByPattern(t *testing.T) {
 	assert.True(t, shouldBeIgnored("aaa", "/aaa"))
 	assert.True(t, shouldBeIgnored("aaa", "/aaabc"))
 	assert.False(t, shouldBeIgnored("xxx", "/xxx"))
+}
+
+func TestIgnoreFromFile(t *testing.T) {
+	file, err := os.OpenFile("ignore", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	if _, err := file.WriteString("/aaa\n"); err != nil {
+		panic(err)
+	}
+	if _, err := file.WriteString("/aaabc\n"); err != nil {
+		panic(err)
+	}
+	if _, err := file.WriteString("/[abd]+\n"); err != nil {
+		panic(err)
+	}
+
+	ui := &common.UI{}
+	err = ui.SetIgnoreFromFile("ignore")
+	assert.Nil(t, err)
+	shouldBeIgnored := ui.CreateIgnoreFunc()
+
+	assert.True(t, shouldBeIgnored("aaa", "/aaa"))
+	assert.True(t, shouldBeIgnored("aaabc", "/aaabc"))
+	assert.True(t, shouldBeIgnored("aaabd", "/aaabd"))
+	assert.False(t, shouldBeIgnored("xxx", "/xxx"))
+}
+
+func TestIgnoreFromNotExistingFile(t *testing.T) {
+	ui := &common.UI{}
+	err := ui.SetIgnoreFromFile("xxx")
+	assert.NotNil(t, err)
 }
 
 func TestIgnoreHidden(t *testing.T) {

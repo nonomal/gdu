@@ -3,12 +3,14 @@ package analyze
 import (
 	"sort"
 	"testing"
+	"time"
 
+	"github.com/dundee/gdu/v5/pkg/fs"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestSortByUsage(t *testing.T) {
-	files := Files{
+	files := fs.Files{
 		&File{
 			Usage: 1,
 		},
@@ -20,15 +22,38 @@ func TestSortByUsage(t *testing.T) {
 		},
 	}
 
-	sort.Sort(files)
+	sort.Sort(sort.Reverse(files))
 
 	assert.Equal(t, int64(3), files[0].GetUsage())
 	assert.Equal(t, int64(2), files[1].GetUsage())
 	assert.Equal(t, int64(1), files[2].GetUsage())
 }
 
+func TestStableSortByUsage(t *testing.T) {
+	files := fs.Files{
+		&File{
+			Name:  "aaa",
+			Usage: 1,
+		},
+		&File{
+			Name:  "bbb",
+			Usage: 1,
+		},
+		&File{
+			Name:  "ccc",
+			Usage: 3,
+		},
+	}
+
+	sort.Sort(sort.Reverse(files))
+
+	assert.Equal(t, "ccc", files[0].GetName())
+	assert.Equal(t, "bbb", files[1].GetName())
+	assert.Equal(t, "aaa", files[2].GetName())
+}
+
 func TestSortByUsageAsc(t *testing.T) {
-	files := Files{
+	files := fs.Files{
 		&File{
 			Size: 1,
 		},
@@ -40,7 +65,7 @@ func TestSortByUsageAsc(t *testing.T) {
 		},
 	}
 
-	sort.Sort(sort.Reverse(files))
+	sort.Sort(files)
 
 	assert.Equal(t, int64(1), files[0].GetSize())
 	assert.Equal(t, int64(2), files[1].GetSize())
@@ -48,7 +73,7 @@ func TestSortByUsageAsc(t *testing.T) {
 }
 
 func TestSortBySize(t *testing.T) {
-	files := Files{
+	files := fs.Files{
 		&File{
 			Size: 1,
 		},
@@ -60,7 +85,7 @@ func TestSortBySize(t *testing.T) {
 		},
 	}
 
-	sort.Sort(ByApparentSize(files))
+	sort.Sort(sort.Reverse(fs.ByApparentSize(files)))
 
 	assert.Equal(t, int64(3), files[0].GetSize())
 	assert.Equal(t, int64(2), files[1].GetSize())
@@ -68,7 +93,7 @@ func TestSortBySize(t *testing.T) {
 }
 
 func TestSortBySizeAsc(t *testing.T) {
-	files := Files{
+	files := fs.Files{
 		&File{
 			Size: 1,
 		},
@@ -80,7 +105,7 @@ func TestSortBySizeAsc(t *testing.T) {
 		},
 	}
 
-	sort.Sort(sort.Reverse(ByApparentSize(files)))
+	sort.Sort(fs.ByApparentSize(files))
 
 	assert.Equal(t, int64(1), files[0].GetSize())
 	assert.Equal(t, int64(2), files[1].GetSize())
@@ -88,7 +113,7 @@ func TestSortBySizeAsc(t *testing.T) {
 }
 
 func TestSortByItemCount(t *testing.T) {
-	files := Files{
+	files := fs.Files{
 		&Dir{
 			ItemCount: 1,
 		},
@@ -100,7 +125,7 @@ func TestSortByItemCount(t *testing.T) {
 		},
 	}
 
-	sort.Sort(ByItemCount(files))
+	sort.Sort(sort.Reverse(fs.ByItemCount(files)))
 
 	assert.Equal(t, 3, files[0].GetItemCount())
 	assert.Equal(t, 2, files[1].GetItemCount())
@@ -108,7 +133,7 @@ func TestSortByItemCount(t *testing.T) {
 }
 
 func TestSortByName(t *testing.T) {
-	files := Files{
+	files := fs.Files{
 		&File{
 			Name: "aa",
 		},
@@ -120,9 +145,49 @@ func TestSortByName(t *testing.T) {
 		},
 	}
 
-	sort.Sort(ByName(files))
+	sort.Sort(sort.Reverse(fs.ByName(files)))
 
 	assert.Equal(t, "cc", files[0].GetName())
 	assert.Equal(t, "bb", files[1].GetName())
 	assert.Equal(t, "aa", files[2].GetName())
+}
+
+func TestNaturalSortByNameAsc(t *testing.T) {
+	files := fs.Files{
+		&File{
+			Name: "aa3",
+		},
+		&File{
+			Name: "aa20",
+		},
+		&File{
+			Name: "aa100",
+		},
+	}
+
+	sort.Sort(fs.ByName(files))
+
+	assert.Equal(t, "aa3", files[0].GetName())
+	assert.Equal(t, "aa20", files[1].GetName())
+	assert.Equal(t, "aa100", files[2].GetName())
+}
+
+func TestSortByMtime(t *testing.T) {
+	files := fs.Files{
+		&File{
+			Mtime: time.Date(2021, 8, 19, 0, 40, 0, 0, time.UTC),
+		},
+		&File{
+			Mtime: time.Date(2021, 8, 19, 0, 41, 0, 0, time.UTC),
+		},
+		&File{
+			Mtime: time.Date(2021, 8, 19, 0, 42, 0, 0, time.UTC),
+		},
+	}
+
+	sort.Sort(sort.Reverse(fs.ByMtime(files)))
+
+	assert.Equal(t, 42, files[0].GetMtime().Minute())
+	assert.Equal(t, 41, files[1].GetMtime().Minute())
+	assert.Equal(t, 40, files[2].GetMtime().Minute())
 }
