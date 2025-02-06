@@ -1,10 +1,11 @@
-// +build windows darwin openbsd netbsd plan9
+//go:build windows || plan9
+// +build windows plan9
 
 package device
 
 import "errors"
 
-// OtherDevicesInfoGetter retruns info for other devices
+// OtherDevicesInfoGetter returns info for other devices
 type OtherDevicesInfoGetter struct{}
 
 // Getter is current instance of DevicesInfoGetter

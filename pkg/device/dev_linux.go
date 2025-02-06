@@ -2,13 +2,15 @@ package device
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"os"
 	"strings"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
-// LinuxDevicesInfoGetter retruns info for Linux devices
+// LinuxDevicesInfoGetter returns info for Linux devices
 type LinuxDevicesInfoGetter struct {
 	MountsPath string
 }
@@ -22,9 +24,18 @@ func (t LinuxDevicesInfoGetter) GetMounts() (Devices, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
 
-	return readMountsFile(file)
+	devices, err := readMountsFile(file)
+	if err != nil {
+		if cerr := file.Close(); cerr != nil {
+			return nil, fmt.Errorf("%w; %s", err, cerr.Error())
+		}
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	return devices, nil
 }
 
 // GetDevicesInfo returns result of GetMounts with usage info about mounted devices (by calling Statfs syscall)
@@ -47,7 +58,7 @@ func readMountsFile(file io.Reader) (Devices, error) {
 
 		device := &Device{
 			Name:       parts[0],
-			MountPoint: parts[1],
+			MountPoint: unescapeString(parts[1]),
 			Fstype:     parts[2],
 		}
 		mounts = append(mounts, device)
@@ -68,9 +79,12 @@ func processMounts(mounts Devices, ignoreErrors bool) (Devices, error) {
 			continue
 		}
 
-		if strings.HasPrefix(mount.Name, "/dev") || mount.Fstype == "zfs" {
-			info := &syscall.Statfs_t{}
-			err := syscall.Statfs(mount.MountPoint, info)
+		if strings.HasPrefix(mount.Name, "/dev") ||
+			mount.Fstype == "zfs" ||
+			mount.Fstype == "nfs" ||
+			mount.Fstype == "nfs4" {
+			info := &unix.Statfs_t{}
+			err := unix.Statfs(mount.MountPoint, info)
 			if err != nil && !ignoreErrors {
 				return nil, err
 			}
@@ -83,4 +97,8 @@ func processMounts(mounts Devices, ignoreErrors bool) (Devices, error) {
 	}
 
 	return devices, nil
+}
+
+func unescapeString(str string) string {
+	return strings.ReplaceAll(str, "\\040", " ")
 }

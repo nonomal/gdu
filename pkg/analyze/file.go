@@ -1,35 +1,22 @@
 package analyze
 
 import (
-	"os"
 	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/dundee/gdu/v5/pkg/fs"
 )
-
-// AlreadyCountedHardlinks holds all files with hardlinks that have already been counted
-type AlreadyCountedHardlinks map[uint64]bool
-
-// Item is fs item (file or dir)
-type Item interface {
-	GetPath() string
-	GetName() string
-	GetFlag() rune
-	IsDir() bool
-	GetSize() int64
-	GetType() string
-	GetUsage() int64
-	GetItemCount() int
-	GetParent() *Dir
-	getItemStats(links AlreadyCountedHardlinks) (int, int64, int64)
-}
 
 // File struct
 type File struct {
-	Flag   rune
+	Mtime  time.Time
+	Parent fs.Item
 	Name   string
 	Size   int64
 	Usage  int64
-	Mli    uint64 // MutliLinkInode - Inode number of file with multiple links (hard link)
-	Parent *Dir
+	Mli    uint64
+	Flag   rune
 }
 
 // GetName returns name of dir
@@ -42,12 +29,17 @@ func (f *File) IsDir() bool {
 	return false
 }
 
-// GetParent retruns parent dir
-func (f *File) GetParent() *Dir {
+// GetParent returns parent dir
+func (f *File) GetParent() fs.Item {
 	return f.Parent
 }
 
-// GetPath retruns absolute Get of the file
+// SetParent sets parent dir
+func (f *File) SetParent(parent fs.Item) {
+	f.Parent = parent
+}
+
+// GetPath returns absolute Get of the file
 func (f *File) GetPath() string {
 	return filepath.Join(f.Parent.GetPath(), f.Name)
 }
@@ -67,10 +59,14 @@ func (f *File) GetUsage() int64 {
 	return f.Usage
 }
 
+// GetMtime returns mtime of the file
+func (f *File) GetMtime() time.Time {
+	return f.Mtime
+}
+
 // GetType returns name type of item
 func (f *File) GetType() string {
-	switch f.Flag {
-	case '@':
+	if f.Flag == '@' {
 		return "Other"
 	}
 	return "File"
@@ -81,32 +77,95 @@ func (f *File) GetItemCount() int {
 	return 1
 }
 
-func (f *File) alreadyCounted(links AlreadyCountedHardlinks) bool {
-	mli := f.Mli
-	if mli > 0 {
-		if !links[mli] {
-			links[mli] = true
-			return false
-		}
-		f.Flag = 'H'
-		return true
-	}
-	return false
+// GetMultiLinkedInode returns inode number of multilinked file
+func (f *File) GetMultiLinkedInode() uint64 {
+	return f.Mli
 }
 
-func (f *File) getItemStats(links AlreadyCountedHardlinks) (int, int64, int64) {
-	if f.alreadyCounted(links) {
+func (f *File) alreadyCounted(linkedItems fs.HardLinkedItems) bool {
+	mli := f.Mli
+	counted := false
+	if mli > 0 {
+		f.Flag = 'H'
+		if _, ok := linkedItems[mli]; ok {
+			counted = true
+		}
+		linkedItems[mli] = append(linkedItems[mli], f)
+	}
+	return counted
+}
+
+// GetItemStats returns 1 as count of items, apparent usage and real usage of this file
+func (f *File) GetItemStats(linkedItems fs.HardLinkedItems) (itemCount int, size, usage int64) {
+	if f.alreadyCounted(linkedItems) {
 		return 1, 0, 0
 	}
 	return 1, f.GetSize(), f.GetUsage()
+}
+
+// UpdateStats does nothing on file
+func (f *File) UpdateStats(linkedItems fs.HardLinkedItems) {}
+
+// GetFiles returns all files in directory
+func (f *File) GetFiles() fs.Files {
+	return fs.Files{}
+}
+
+// GetFilesLocked returns all files in directory
+func (f *File) GetFilesLocked() fs.Files {
+	return f.GetFiles()
+}
+
+// RLock panics on file
+func (f *File) RLock() func() {
+	panic("SetFiles should not be called on file")
+}
+
+// SetFiles panics on file
+func (f *File) SetFiles(files fs.Files) {
+	panic("SetFiles should not be called on file")
+}
+
+// AddFile panics on file
+func (f *File) AddFile(item fs.Item) {
+	panic("AddFile should not be called on file")
+}
+
+// RemoveFile panics on file
+func (f *File) RemoveFile(item fs.Item) {
+	panic("RemoveFile should not be called on file")
 }
 
 // Dir struct
 type Dir struct {
 	*File
 	BasePath  string
+	Files     fs.Files
 	ItemCount int
-	Files     Files
+	m         sync.RWMutex
+}
+
+// AddFile add item to files
+func (f *Dir) AddFile(item fs.Item) {
+	f.Files = append(f.Files, item)
+}
+
+// GetFiles returns all files in directory
+func (f *Dir) GetFiles() fs.Files {
+	return f.Files
+}
+
+// GetFilesLocked returns all files in directory
+// It is safe to call this function from multiple goroutines
+func (f *Dir) GetFilesLocked() fs.Files {
+	f.m.RLock()
+	defer f.m.RUnlock()
+	return f.GetFiles()[:]
+}
+
+// SetFiles sets files in directory
+func (f *Dir) SetFiles(files fs.Files) {
+	f.Files = files
 }
 
 // GetType returns name type of item
@@ -116,6 +175,8 @@ func (f *Dir) GetType() string {
 
 // GetItemCount returns number of files in dir
 func (f *Dir) GetItemCount() int {
+	f.m.RLock()
+	defer f.m.RUnlock()
 	return f.ItemCount
 }
 
@@ -124,29 +185,37 @@ func (f *Dir) IsDir() bool {
 	return true
 }
 
-// GetPath retruns absolute path of the file
+// GetPath returns absolute path of the file
 func (f *Dir) GetPath() string {
 	if f.BasePath != "" {
 		return filepath.Join(f.BasePath, f.Name)
 	}
-	return filepath.Join(f.Parent.GetPath(), f.Name)
+	if f.Parent != nil {
+		return filepath.Join(f.Parent.GetPath(), f.Name)
+	}
+	return f.Name
 }
 
-func (f *Dir) getItemStats(links AlreadyCountedHardlinks) (int, int64, int64) {
-	f.UpdateStats(links)
+// GetItemStats returns item count, apparent usage and real usage of this dir
+func (f *Dir) GetItemStats(linkedItems fs.HardLinkedItems) (itemCount int, size, usage int64) {
+	f.UpdateStats(linkedItems)
 	return f.ItemCount, f.GetSize(), f.GetUsage()
 }
 
 // UpdateStats recursively updates size and item count
-func (f *Dir) UpdateStats(links AlreadyCountedHardlinks) {
+func (f *Dir) UpdateStats(linkedItems fs.HardLinkedItems) {
 	totalSize := int64(4096)
 	totalUsage := int64(4096)
 	var itemCount int
-	for _, entry := range f.Files {
-		count, size, usage := entry.getItemStats(links)
+	for _, entry := range f.GetFiles() {
+		count, size, usage := entry.GetItemStats(linkedItems)
 		totalSize += size
 		totalUsage += usage
 		itemCount += count
+
+		if entry.GetMtime().After(f.Mtime) {
+			f.Mtime = entry.GetMtime()
+		}
 
 		switch entry.GetFlag() {
 		case '!', '.':
@@ -160,89 +229,14 @@ func (f *Dir) UpdateStats(links AlreadyCountedHardlinks) {
 	f.Usage = totalUsage
 }
 
-// Files - slice of pointers to File
-type Files []Item
+// RemoveFile removes item from dir, updates size and item count
+func (f *Dir) RemoveFile(item fs.Item) {
+	f.m.Lock()
+	defer f.m.Unlock()
 
-// Append addes one item to Files
-func (f *Files) Append(file Item) {
-	slice := *f
-	slice = append(slice, file)
-	*f = slice
-}
+	f.SetFiles(f.GetFiles().Remove(item))
 
-// IndexOf searches File in Files and returns its index
-func (f Files) IndexOf(file Item) (int, bool) {
-	for i, item := range f {
-		if item == file {
-			return i, true
-		}
-	}
-	return 0, false
-}
-
-// FindByName searches name in Files and returns its index
-func (f Files) FindByName(name string) (int, bool) {
-	for i, item := range f {
-		if item.GetName() == name {
-			return i, true
-		}
-	}
-	return 0, false
-}
-
-// Remove removes File from Files
-func (f Files) Remove(file Item) Files {
-	index, ok := f.IndexOf(file)
-	if !ok {
-		return f
-	}
-	return append(f[:index], f[index+1:]...)
-}
-
-// RemoveByName removes File from Files
-func (f Files) RemoveByName(name string) Files {
-	index, ok := f.FindByName(name)
-	if !ok {
-		return f
-	}
-	return append(f[:index], f[index+1:]...)
-}
-
-func (f Files) Len() int           { return len(f) }
-func (f Files) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
-func (f Files) Less(i, j int) bool { return f[i].GetUsage() > f[j].GetUsage() }
-
-// ByApparentSize sorts files by apparent size
-type ByApparentSize Files
-
-func (f ByApparentSize) Len() int           { return len(f) }
-func (f ByApparentSize) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
-func (f ByApparentSize) Less(i, j int) bool { return f[i].GetSize() > f[j].GetSize() }
-
-// ByItemCount sorts files by item count
-type ByItemCount Files
-
-func (f ByItemCount) Len() int           { return len(f) }
-func (f ByItemCount) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
-func (f ByItemCount) Less(i, j int) bool { return f[i].GetItemCount() > f[j].GetItemCount() }
-
-// ByName sorts files by name
-type ByName Files
-
-func (f ByName) Len() int           { return len(f) }
-func (f ByName) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
-func (f ByName) Less(i, j int) bool { return f[i].GetName() > f[j].GetName() }
-
-// RemoveItemFromDir removes item from dir
-func RemoveItemFromDir(dir *Dir, item Item) error {
-	err := os.RemoveAll(item.GetPath())
-	if err != nil {
-		return err
-	}
-
-	dir.Files = dir.Files.Remove(item)
-
-	cur := dir
+	cur := f
 	for {
 		cur.ItemCount -= item.GetItemCount()
 		cur.Size -= item.GetSize()
@@ -251,37 +245,12 @@ func RemoveItemFromDir(dir *Dir, item Item) error {
 		if cur.Parent == nil {
 			break
 		}
-		cur = cur.Parent
+		cur = cur.Parent.(*Dir)
 	}
-	return nil
 }
 
-// EmptyFileFromDir empty file from dir
-func EmptyFileFromDir(dir *Dir, file Item) error {
-	err := os.Truncate(file.GetPath(), 0)
-	if err != nil {
-		return err
-	}
-
-	cur := dir
-	for {
-		cur.Size -= file.GetSize()
-		cur.Usage -= file.GetUsage()
-
-		if cur.Parent == nil {
-			break
-		}
-		cur = cur.Parent
-	}
-
-	dir.Files = dir.Files.Remove(file)
-	newFile := &File{
-		Name:   file.GetName(),
-		Flag:   file.GetFlag(),
-		Size:   0,
-		Parent: dir,
-	}
-	dir.Files.Append(newFile)
-
-	return nil
+// RLock read locks dir
+func (f *Dir) RLock() func() {
+	f.m.RLock()
+	return f.m.RUnlock
 }

@@ -1,14 +1,16 @@
 package tui
 
 import (
+	"bytes"
+	"errors"
+	"os"
 	"testing"
 
 	"github.com/dundee/gdu/v5/internal/testanalyze"
 	"github.com/dundee/gdu/v5/internal/testapp"
-	"github.com/dundee/gdu/v5/internal/testdev"
 	"github.com/dundee/gdu/v5/internal/testdir"
 	"github.com/dundee/gdu/v5/pkg/analyze"
-	"github.com/dundee/gdu/v5/pkg/device"
+	"github.com/dundee/gdu/v5/pkg/fs"
 	"github.com/gdamore/tcell/v2"
 	"github.com/stretchr/testify/assert"
 )
@@ -17,7 +19,7 @@ func TestShowDevices(t *testing.T) {
 	app, simScreen := testapp.CreateTestAppWithSimScreen(50, 50)
 	defer simScreen.Fini()
 
-	ui := CreateUI(app, true, true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, true, true, false, false, false)
 	err := ui.ListDevices(getDevicesInfoMock())
 
 	assert.Nil(t, err)
@@ -37,7 +39,7 @@ func TestShowDevicesBW(t *testing.T) {
 	app, simScreen := testapp.CreateTestAppWithSimScreen(50, 50)
 	defer simScreen.Fini()
 
-	ui := CreateUI(app, false, false)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, false, false, false, false)
 	err := ui.ListDevices(getDevicesInfoMock())
 
 	assert.Nil(t, err)
@@ -54,10 +56,14 @@ func TestShowDevicesBW(t *testing.T) {
 }
 
 func TestDeviceSelected(t *testing.T) {
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
 	app := testapp.CreateMockedApp(false)
-	ui := CreateUI(app, true, true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, true, true, true, false, false)
 	ui.Analyzer = &testanalyze.MockedAnalyzer{}
 	ui.done = make(chan struct{})
+	ui.UseOldSizeBar()
 	ui.SetIgnoreDirPaths([]string{"/xxx"})
 	err := ui.ListDevices(getDevicesInfoMock())
 
@@ -68,65 +74,45 @@ func TestDeviceSelected(t *testing.T) {
 
 	<-ui.done // wait for analyzer
 
-	assert.Equal(t, "test_dir", ui.currentDir.Name)
-
-	for _, f := range ui.app.(*testapp.MockedApp).UpdateDraws {
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
 		f()
 	}
 
-	assert.Equal(t, 5, ui.table.GetRowCount())
-	assert.Contains(t, ui.table.GetCell(0, 0).Text, "/..")
-	assert.Contains(t, ui.table.GetCell(1, 0).Text, "aaa")
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
+
+	assert.Equal(t, 4, ui.table.GetRowCount())
+	assert.Contains(t, ui.table.GetCell(0, 0).Text, "ccc")
+	assert.Contains(t, ui.table.GetCell(1, 0).Text, "bbb")
 }
-func TestDeviceSelectedWithAnalyzeErr(t *testing.T) {
+
+func TestNilDeviceSelected(t *testing.T) {
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
 	app := testapp.CreateMockedApp(false)
-	ui := CreateUI(app, true, true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, true, true, true, false, false)
+	ui.Analyzer = &testanalyze.MockedAnalyzer{}
 	ui.done = make(chan struct{})
+	ui.UseOldSizeBar()
 	ui.SetIgnoreDirPaths([]string{"/xxx"})
 
-	devicesInfoMock := getDevicesInfoMock().(testdev.DevicesInfoGetterMock)
+	ui.deviceItemSelected(1, 0)
 
-	item3 := &device.Device{
-		Name:       "xxx",
-		MountPoint: "/xxx",
-		Size:       1e12,
-		Free:       1e6,
-	}
-
-	devicesInfoMock.Devices = append(devicesInfoMock.Devices, item3)
-
-	err := ui.ListDevices(devicesInfoMock)
-
-	assert.Nil(t, err)
-	assert.Equal(t, 4, ui.table.GetRowCount())
-
-	ui.deviceItemSelected(3, 0) // select /xxx which does not exist
-
-	assert.True(t, ui.pages.HasPage("error"))
+	assert.Equal(t, 0, ui.table.GetRowCount())
 }
 
 func TestAnalyzePath(t *testing.T) {
 	ui := getAnalyzedPathMockedApp(t, true, true, true)
 
-	assert.Equal(t, 5, ui.table.GetRowCount())
-	assert.Contains(t, ui.table.GetCell(0, 0).Text, "/..")
-	assert.Contains(t, ui.table.GetCell(1, 0).Text, "aaa")
-}
-
-func TestAnalyzePathWithErr(t *testing.T) {
-	app := testapp.CreateMockedApp(true)
-	ui := CreateUI(app, false, true)
-	err := ui.AnalyzePath("xxx", nil)
-
-	assert.Contains(t, err.Error(), "no such file or directory")
+	assert.Equal(t, 4, ui.table.GetRowCount())
+	assert.Contains(t, ui.table.GetCell(0, 0).Text, "ccc")
 }
 
 func TestAnalyzePathBW(t *testing.T) {
 	ui := getAnalyzedPathMockedApp(t, false, true, true)
 
-	assert.Equal(t, 5, ui.table.GetRowCount())
-	assert.Contains(t, ui.table.GetCell(0, 0).Text, "/..")
-	assert.Contains(t, ui.table.GetCell(1, 0).Text, "aaa")
+	assert.Equal(t, 4, ui.table.GetRowCount())
+	assert.Contains(t, ui.table.GetCell(0, 0).Text, "ccc")
 }
 
 func TestAnalyzePathWithParentDir(t *testing.T) {
@@ -134,13 +120,15 @@ func TestAnalyzePathWithParentDir(t *testing.T) {
 		File: &analyze.File{
 			Name: "parent",
 		},
-		Files: make([]analyze.Item, 0, 1),
+		Files: make([]fs.Item, 0, 1),
 	}
 
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
 	app := testapp.CreateMockedApp(true)
-	ui := CreateUI(app, false, true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, true, true, false)
 	ui.Analyzer = &testanalyze.MockedAnalyzer{}
-	ui.PathChecker = testdir.MockedPathChecker
 	ui.topDir = parentDir
 	ui.done = make(chan struct{})
 	err := ui.AnalyzePath("test_dir", parentDir)
@@ -148,62 +136,122 @@ func TestAnalyzePathWithParentDir(t *testing.T) {
 
 	<-ui.done // wait for analyzer
 
-	assert.Equal(t, "test_dir", ui.currentDir.Name)
-	assert.Equal(t, parentDir, ui.currentDir.Parent)
-
-	for _, f := range ui.app.(*testapp.MockedApp).UpdateDraws {
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
 		f()
 	}
 
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
+	assert.Equal(t, parentDir, ui.currentDir.GetParent())
+
 	assert.Equal(t, 5, ui.table.GetRowCount())
 	assert.Contains(t, ui.table.GetCell(0, 0).Text, "/..")
-	assert.Contains(t, ui.table.GetCell(1, 0).Text, "aaa")
+	assert.Contains(t, ui.table.GetCell(1, 0).Text, "ccc")
+}
+
+func TestReadAnalysis(t *testing.T) {
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
+	input, err := os.OpenFile("../internal/testdata/test.json", os.O_RDONLY, 0o644)
+	assert.Nil(t, err)
+
+	app := testapp.CreateMockedApp(true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, true, true, true, false, false)
+	ui.done = make(chan struct{})
+
+	err = ui.ReadAnalysis(input)
+	assert.Nil(t, err)
+
+	<-ui.done // wait for reading
+
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
+		f()
+	}
+
+	assert.Equal(t, "gdu", ui.currentDir.GetName())
+}
+
+func TestReadAnalysisWithWrongFile(t *testing.T) {
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
+	input, err := os.OpenFile("../internal/testdata/wrong.json", os.O_RDONLY, 0o644)
+	assert.Nil(t, err)
+
+	app := testapp.CreateMockedApp(true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, true, true, false, false, false)
+	ui.done = make(chan struct{})
+
+	err = ui.ReadAnalysis(input)
+	assert.Nil(t, err)
+
+	<-ui.done // wait for reading
+
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
+		f()
+	}
+
+	assert.True(t, ui.pages.HasPage("error"))
 }
 
 func TestViewDirContents(t *testing.T) {
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
 	app := testapp.CreateMockedApp(true)
-	ui := CreateUI(app, false, true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false)
 	ui.Analyzer = &testanalyze.MockedAnalyzer{}
-	ui.PathChecker = testdir.MockedPathChecker
 	ui.done = make(chan struct{})
 	err := ui.AnalyzePath("test_dir", nil)
 	assert.Nil(t, err)
 
 	<-ui.done // wait for analyzer
 
-	assert.Equal(t, "test_dir", ui.currentDir.Name)
-
-	for _, f := range ui.app.(*testapp.MockedApp).UpdateDraws {
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
 		f()
 	}
+
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
 
 	res := ui.showFile() // selected item is dir, do nothing
 	assert.Nil(t, res)
 }
 
-func TestViewContentsOfNotExistingFile(t *testing.T) {
+func TestViewFileWithoutCurrentDir(t *testing.T) {
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
 	app := testapp.CreateMockedApp(true)
-	ui := CreateUI(app, false, true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false)
 	ui.Analyzer = &testanalyze.MockedAnalyzer{}
-	ui.PathChecker = testdir.MockedPathChecker
+	ui.done = make(chan struct{})
+
+	res := ui.showFile() // no current directory
+	assert.Nil(t, res)
+}
+
+func TestViewContentsOfNotExistingFile(t *testing.T) {
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
+	app := testapp.CreateMockedApp(true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false)
+	ui.Analyzer = &testanalyze.MockedAnalyzer{}
 	ui.done = make(chan struct{})
 	err := ui.AnalyzePath("test_dir", nil)
 	assert.Nil(t, err)
 
 	<-ui.done // wait for analyzer
 
-	assert.Equal(t, "test_dir", ui.currentDir.Name)
-
-	for _, f := range ui.app.(*testapp.MockedApp).UpdateDraws {
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
 		f()
 	}
 
-	ui.table.Select(0, 0)
-	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
 
-	ui.table.Select(4, 0)
+	ui.table.Select(3, 0)
 
-	selectedFile := ui.table.GetCell(4, 0).GetReference().(analyze.Item)
+	selectedFile := ui.table.GetCell(3, 0).GetReference().(fs.Item)
 	assert.Equal(t, "ddd", selectedFile.GetName())
 
 	res := ui.showFile()
@@ -213,20 +261,22 @@ func TestViewContentsOfNotExistingFile(t *testing.T) {
 func TestViewFile(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
 
 	app := testapp.CreateMockedApp(true)
-	ui := CreateUI(app, false, true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false)
 	ui.done = make(chan struct{})
 	err := ui.AnalyzePath("test_dir", nil)
 	assert.Nil(t, err)
 
 	<-ui.done // wait for analyzer
 
-	assert.Equal(t, "test_dir", ui.currentDir.Name)
-
-	for _, f := range ui.app.(*testapp.MockedApp).UpdateDraws {
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
 		f()
 	}
+
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
 
 	ui.table.Select(0, 0)
 	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
@@ -239,27 +289,97 @@ func TestViewFile(t *testing.T) {
 	assert.Equal(t, 'j', event.Rune())
 }
 
-func TestShowInfo(t *testing.T) {
+func TestChangeCwd(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+	cwd := ""
 
+	opt := func(ui *UI) {
+		ui.SetChangeCwdFn(func(p string) error {
+			cwd = p
+			return nil
+		})
+	}
 	app := testapp.CreateMockedApp(true)
-	ui := CreateUI(app, false, true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false, opt)
 	ui.done = make(chan struct{})
 	err := ui.AnalyzePath("test_dir", nil)
 	assert.Nil(t, err)
 
 	<-ui.done // wait for analyzer
 
-	assert.Equal(t, "test_dir", ui.currentDir.Name)
-
-	for _, f := range ui.app.(*testapp.MockedApp).UpdateDraws {
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
 		f()
 	}
 
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
+
+	ui.table.Select(0, 0)
 	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
-	ui.keyPressed(tcell.NewEventKey(tcell.KeyRune, 'i', 0))
-	ui.table.Select(2, 0)
+	ui.table.Select(1, 0)
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
+
+	assert.Equal(t, cwd, "test_dir/nested/subnested")
+}
+
+func TestChangeCwdWithErr(t *testing.T) {
+	fin := testdir.CreateTestDir()
+	defer fin()
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+	cwd := ""
+
+	opt := func(ui *UI) {
+		ui.SetChangeCwdFn(func(p string) error {
+			cwd = p
+			return errors.New("failed")
+		})
+	}
+	app := testapp.CreateMockedApp(true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false, opt)
+	ui.done = make(chan struct{})
+	err := ui.AnalyzePath("test_dir", nil)
+	assert.Nil(t, err)
+
+	<-ui.done // wait for analyzer
+
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
+		f()
+	}
+
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
+
+	ui.table.Select(0, 0)
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
+	ui.table.Select(1, 0)
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
+
+	assert.Equal(t, cwd, "test_dir/nested/subnested")
+}
+
+func TestShowInfo(t *testing.T) {
+	fin := testdir.CreateTestDir()
+	defer fin()
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
+	app := testapp.CreateMockedApp(true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false)
+	ui.done = make(chan struct{})
+	err := ui.AnalyzePath("test_dir", nil)
+	assert.Nil(t, err)
+
+	<-ui.done // wait for analyzer
+
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
+		f()
+	}
+
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
+
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
 	ui.keyPressed(tcell.NewEventKey(tcell.KeyRune, 'i', 0))
 
 	assert.True(t, ui.pages.HasPage("info"))
@@ -272,46 +392,109 @@ func TestShowInfo(t *testing.T) {
 func TestShowInfoBW(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
 
 	app := testapp.CreateMockedApp(true)
-	ui := CreateUI(app, true, false)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, true, false, false, false, false)
 	ui.done = make(chan struct{})
 	err := ui.AnalyzePath("test_dir", nil)
 	assert.Nil(t, err)
 
 	<-ui.done // wait for analyzer
 
-	assert.Equal(t, "test_dir", ui.currentDir.Name)
-
-	for _, f := range ui.app.(*testapp.MockedApp).UpdateDraws {
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
 		f()
 	}
 
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
+
 	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
-	ui.keyPressed(tcell.NewEventKey(tcell.KeyRune, 'i', 0))
-	ui.table.Select(2, 0)
 	ui.keyPressed(tcell.NewEventKey(tcell.KeyRune, 'i', 0))
 
 	assert.True(t, ui.pages.HasPage("info"))
+
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRune, 'i', 0))
+
+	assert.False(t, ui.pages.HasPage("info"))
+}
+
+func TestShowInfoWithHardlinks(t *testing.T) {
+	fin := testdir.CreateTestDir()
+	defer fin()
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
+	app := testapp.CreateMockedApp(true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false)
+	ui.done = make(chan struct{})
+	err := ui.AnalyzePath("test_dir", nil)
+	assert.Nil(t, err)
+
+	<-ui.done // wait for analyzer
+
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
+		f()
+	}
+
+	nested := ui.currentDir.GetFiles()[0].(*analyze.Dir)
+	subnested := nested.Files[1].(*analyze.Dir)
+	file := subnested.Files[0].(*analyze.File)
+	file2 := nested.Files[0].(*analyze.File)
+	file.Mli = 1
+	file2.Mli = 1
+
+	ui.currentDir.UpdateStats(ui.linkedItems)
+
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
+
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
+	ui.table.Select(1, 0)
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))
+	ui.table.Select(1, 0)
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRune, 'i', 0))
+
+	assert.True(t, ui.pages.HasPage("info"))
+
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRune, 'q', 0))
+
+	assert.False(t, ui.pages.HasPage("info"))
+}
+
+func TestShowInfoWithoutCurrentDir(t *testing.T) {
+	fin := testdir.CreateTestDir()
+	defer fin()
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
+
+	app := testapp.CreateMockedApp(true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false)
+	ui.done = make(chan struct{})
+
+	// pressing `i` will do nothing
+	ui.keyPressed(tcell.NewEventKey(tcell.KeyRune, 'i', 0))
+	assert.False(t, ui.pages.HasPage("info"))
 }
 
 func TestExitViewFile(t *testing.T) {
 	fin := testdir.CreateTestDir()
 	defer fin()
+	simScreen := testapp.CreateSimScreen()
+	defer simScreen.Fini()
 
 	app := testapp.CreateMockedApp(true)
-	ui := CreateUI(app, false, true)
+	ui := CreateUI(app, simScreen, &bytes.Buffer{}, false, true, false, false, false)
 	ui.done = make(chan struct{})
 	err := ui.AnalyzePath("test_dir", nil)
 	assert.Nil(t, err)
 
 	<-ui.done // wait for analyzer
 
-	assert.Equal(t, "test_dir", ui.currentDir.Name)
-
-	for _, f := range ui.app.(*testapp.MockedApp).UpdateDraws {
+	for _, f := range ui.app.(*testapp.MockedApp).GetUpdateDraws() {
 		f()
 	}
+
+	assert.Equal(t, "test_dir", ui.currentDir.GetName())
 
 	ui.table.Select(0, 0)
 	ui.keyPressed(tcell.NewEventKey(tcell.KeyRight, 'l', 0))

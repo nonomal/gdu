@@ -1,4 +1,5 @@
-// +build freebsd
+//go:build freebsd || darwin
+// +build freebsd darwin
 
 package device
 
@@ -8,18 +9,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 )
-
-func TestGetDevicesInfo(t *testing.T) {
-	getter := FreeBSDDevicesInfoGetter{MountCmd: "/sbin/mount"}
-	devices, _ := getter.GetDevicesInfo()
-	assert.IsType(t, Devices{}, devices)
-}
-
-func TestGetDevicesInfoFail(t *testing.T) {
-	getter := FreeBSDDevicesInfoGetter{MountCmd: "/nonexistent"}
-	_, err := getter.GetDevicesInfo()
-	assert.Equal(t, "fork/exec /nonexistent: no such file or directory", err.Error())
-}
 
 func TestZfsMountsShown(t *testing.T) {
 	mounts, _ := readMountOutput(strings.NewReader(`/dev/ada0p2 on / (ufs, local, soft-updates)
@@ -41,5 +30,15 @@ argon:/usr/obj on /usr/obj (nfs)`))
 
 	devices, err := processMounts(mounts, true)
 	assert.Len(t, devices, 6)
+	assert.Nil(t, err)
+}
+
+func TestMountsWithSpace(t *testing.T) {
+	mounts, err := readMountOutput(strings.NewReader(
+		`//inglor@vault.lan/volatile on /Users/inglor/Mountpoints/volatile (vault.lan) (smbfs, nodev, nosuid, mounted by inglor)`,
+	))
+	assert.Equal(t, "//inglor@vault.lan/volatile", mounts[0].Name)
+	assert.Equal(t, "/Users/inglor/Mountpoints/volatile (vault.lan)", mounts[0].MountPoint)
+	assert.Equal(t, "smbfs", mounts[0].Fstype)
 	assert.Nil(t, err)
 }

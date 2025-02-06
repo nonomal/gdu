@@ -1,12 +1,13 @@
 package common
 
 import (
+	"bufio"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
-
-	"github.com/dundee/gdu/v5/pkg/analyze"
 )
 
 // CreateIgnorePattern creates one pattern from all path patterns
@@ -16,6 +17,17 @@ func CreateIgnorePattern(paths []string) (*regexp.Regexp, error) {
 	for i, path := range paths {
 		if _, err = regexp.Compile(path); err != nil {
 			return nil, err
+		}
+		if !filepath.IsAbs(path) {
+			absPath, err := filepath.Abs(path)
+			if err == nil {
+				paths = append(paths, absPath)
+			}
+		} else {
+			relPath, err := filepath.Rel("/", path)
+			if err == nil {
+				paths = append(paths, relPath)
+			}
 		}
 		paths[i] = "(" + path + ")"
 	}
@@ -27,16 +39,50 @@ func CreateIgnorePattern(paths []string) (*regexp.Regexp, error) {
 // SetIgnoreDirPaths sets paths to ignore
 func (ui *UI) SetIgnoreDirPaths(paths []string) {
 	log.Printf("Ignoring dirs %s", strings.Join(paths, ", "))
-	ui.IgnoreDirPaths = make(map[string]struct{}, len(paths))
+	ui.IgnoreDirPaths = make(map[string]struct{}, len(paths)*2)
 	for _, path := range paths {
 		ui.IgnoreDirPaths[path] = struct{}{}
+		if !filepath.IsAbs(path) {
+			if absPath, err := filepath.Abs(path); err == nil {
+				ui.IgnoreDirPaths[absPath] = struct{}{}
+			}
+		} else {
+			if relPath, err := filepath.Rel("/", path); err == nil {
+				ui.IgnoreDirPaths[relPath] = struct{}{}
+			}
+		}
 	}
 }
 
-// SetIgnoreDirPatterns sets regular patters of dirs to ignore
+// SetIgnoreDirPatterns sets regular patterns of dirs to ignore
 func (ui *UI) SetIgnoreDirPatterns(paths []string) error {
 	var err error
 	log.Printf("Ignoring dir patterns %s", strings.Join(paths, ", "))
+	ui.IgnoreDirPathPatterns, err = CreateIgnorePattern(paths)
+	return err
+}
+
+// SetIgnoreFromFile sets regular patterns of dirs to ignore
+func (ui *UI) SetIgnoreFromFile(ignoreFile string) error {
+	var err error
+	var paths []string
+	log.Printf("Reading ignoring dir patterns from file '%s'", ignoreFile)
+
+	file, err := os.Open(ignoreFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		paths = append(paths, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
 	ui.IgnoreDirPathPatterns, err = CreateIgnorePattern(paths)
 	return err
 }
@@ -75,7 +121,8 @@ func (ui *UI) IsHiddenDir(name, path string) bool {
 }
 
 // CreateIgnoreFunc returns function for detecting if dir should be ignored
-func (ui *UI) CreateIgnoreFunc() analyze.ShouldDirBeIgnored {
+// nolint: gocyclo // Why: This function is a switch statement that is not too complex
+func (ui *UI) CreateIgnoreFunc() ShouldDirBeIgnored {
 	switch {
 	case len(ui.IgnoreDirPaths) > 0 && ui.IgnoreDirPathPatterns == nil && !ui.IgnoreHidden:
 		return ui.ShouldDirBeIgnored
